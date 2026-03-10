@@ -317,6 +317,81 @@ static SSL_CTX *create_ssl_ctx(const char *cert_pem, const char *key_pem) {
 
 /* ---------- nghttp2 callbacks ---------- */
 
+static int submit_simple_response(nghttp2_session *session, int32_t stream_id) {
+  stream_body_t *body = (stream_body_t *)calloc(1, sizeof(stream_body_t));
+  if (!body) return NGHTTP2_ERR_CALLBACK_FAILURE;
+  body->data = RESPONSE_PAYLOAD;
+  body->len = sizeof(RESPONSE_PAYLOAD) - 1;
+  body->off = 0;
+
+  nghttp2_session_set_stream_user_data(session, stream_id, body);
+
+  char content_length[32];
+  int nw = snprintf(content_length, sizeof(content_length), "%zu", body->len);
+  if (nw < 0 || (size_t)nw >= sizeof(content_length)) {
+    nghttp2_session_set_stream_user_data(session, stream_id, NULL);
+    free(body);
+    return NGHTTP2_ERR_CALLBACK_FAILURE;
+  }
+
+  /*
+   * HTTP/2 uses pseudo-headers for control data.
+   * For responses, ":status" replaces the HTTP/1.1 status line:
+   *
+   *   HTTP/1.1 200 OK
+   *
+   * becomes:
+   *   :status = 200
+   */
+  nghttp2_nv hdrs[] = {
+      MAKE_NV(":status", "200"),
+      MAKE_NV("content-type", "text/plain; charset=utf-8"),
+      MAKE_NV("content-length", content_length),
+  };
+
+  nghttp2_data_provider dp;
+  memset(&dp, 0, sizeof(dp));
+  dp.source.ptr = body;
+  dp.read_callback = data_read_callback;
+
+  int rv = nghttp2_submit_response(session, stream_id, hdrs,
+                                   (size_t)(sizeof(hdrs) / sizeof(hdrs[0])), &dp);
+  if (rv != 0) {
+    nghttp2_session_set_stream_user_data(session, stream_id, NULL);
+    free(body);
+    return NGHTTP2_ERR_CALLBACK_FAILURE;
+  }
+  return 0;
+}
+
+static nghttp2_session *setup_h2_session(conn_t *conn) {
+  nghttp2_session_callbacks *cbs = NULL;
+  nghttp2_session *session = NULL;
+
+  if (nghttp2_session_callbacks_new(&cbs) != 0) return NULL;
+
+  nghttp2_session_callbacks_set_send_callback(cbs, send_callback);
+  nghttp2_session_callbacks_set_on_header_callback(cbs, on_header_callback);
+  nghttp2_session_callbacks_set_on_data_chunk_recv_callback(cbs, on_data_chunk_recv_callback);
+  nghttp2_session_callbacks_set_on_frame_recv_callback(cbs, on_frame_recv_callback);
+  nghttp2_session_callbacks_set_on_stream_close_callback(cbs, on_stream_close_callback);
+
+  if (nghttp2_session_server_new(&session, cbs, conn) != 0) {
+    nghttp2_session_callbacks_del(cbs);
+    return NULL;
+  }
+  nghttp2_session_callbacks_del(cbs);
+
+  nghttp2_settings_entry iv[1] = {
+      {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, MAX_CONCURRENT_STREAMS}};
+  if (nghttp2_submit_settings(session, NGHTTP2_FLAG_NONE, iv, 1) != 0) {
+    nghttp2_session_del(session);
+    return NULL;
+  }
+
+  return session;
+}
+
 /* nghttp2 calls this when it has serialized outbound HTTP/2 bytes. */
 static ssize_t send_callback(nghttp2_session *session,
                              const uint8_t *data, size_t length,
@@ -372,53 +447,6 @@ static ssize_t data_read_callback(nghttp2_session *session,
     *data_flags |= NGHTTP2_DATA_FLAG_EOF;
   }
   return (ssize_t)ncopy;
-}
-
-static int submit_simple_response(nghttp2_session *session, int32_t stream_id) {
-  stream_body_t *body = (stream_body_t *)calloc(1, sizeof(stream_body_t));
-  if (!body) return NGHTTP2_ERR_CALLBACK_FAILURE;
-  body->data = RESPONSE_PAYLOAD;
-  body->len = sizeof(RESPONSE_PAYLOAD) - 1;
-  body->off = 0;
-
-  nghttp2_session_set_stream_user_data(session, stream_id, body);
-
-  char content_length[32];
-  int nw = snprintf(content_length, sizeof(content_length), "%zu", body->len);
-  if (nw < 0 || (size_t)nw >= sizeof(content_length)) {
-    nghttp2_session_set_stream_user_data(session, stream_id, NULL);
-    free(body);
-    return NGHTTP2_ERR_CALLBACK_FAILURE;
-  }
-
-  /*
-   * HTTP/2 uses pseudo-headers for control data.
-   * For responses, ":status" replaces the HTTP/1.1 status line:
-   *
-   *   HTTP/1.1 200 OK
-   *
-   * becomes:
-   *   :status = 200
-   */
-  nghttp2_nv hdrs[] = {
-      MAKE_NV(":status", "200"),
-      MAKE_NV("content-type", "text/plain; charset=utf-8"),
-      MAKE_NV("content-length", content_length),
-  };
-
-  nghttp2_data_provider dp;
-  memset(&dp, 0, sizeof(dp));
-  dp.source.ptr = body;
-  dp.read_callback = data_read_callback;
-
-  int rv = nghttp2_submit_response(session, stream_id, hdrs,
-                                   (size_t)(sizeof(hdrs) / sizeof(hdrs[0])), &dp);
-  if (rv != 0) {
-    nghttp2_session_set_stream_user_data(session, stream_id, NULL);
-    free(body);
-    return NGHTTP2_ERR_CALLBACK_FAILURE;
-  }
-  return 0;
 }
 
 /* Per-header-field callback, not per-frame callback. */
@@ -507,34 +535,6 @@ static int on_stream_close_callback(nghttp2_session *session,
     nghttp2_session_set_stream_user_data(session, stream_id, NULL);
   }
   return 0;
-}
-
-static nghttp2_session *setup_h2_session(conn_t *conn) {
-  nghttp2_session_callbacks *cbs = NULL;
-  nghttp2_session *session = NULL;
-
-  if (nghttp2_session_callbacks_new(&cbs) != 0) return NULL;
-
-  nghttp2_session_callbacks_set_send_callback(cbs, send_callback);
-  nghttp2_session_callbacks_set_on_header_callback(cbs, on_header_callback);
-  nghttp2_session_callbacks_set_on_data_chunk_recv_callback(cbs, on_data_chunk_recv_callback);
-  nghttp2_session_callbacks_set_on_frame_recv_callback(cbs, on_frame_recv_callback);
-  nghttp2_session_callbacks_set_on_stream_close_callback(cbs, on_stream_close_callback);
-
-  if (nghttp2_session_server_new(&session, cbs, conn) != 0) {
-    nghttp2_session_callbacks_del(cbs);
-    return NULL;
-  }
-  nghttp2_session_callbacks_del(cbs);
-
-  nghttp2_settings_entry iv[1] = {
-      {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, MAX_CONCURRENT_STREAMS}};
-  if (nghttp2_submit_settings(session, NGHTTP2_FLAG_NONE, iv, 1) != 0) {
-    nghttp2_session_del(session);
-    return NULL;
-  }
-
-  return session;
 }
 
 /* ---------- TCP helpers ---------- */
