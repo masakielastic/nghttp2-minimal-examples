@@ -51,6 +51,17 @@ static void openssl_die(const char *msg) {
   exit(1);
 }
 
+static void print_usage(FILE *out, const char *prog) {
+  fprintf(out, "Usage: %s <PORT> [<PRIVATE_KEY> <CERT>]\n", prog);
+  fprintf(out, "\n");
+  fprintf(out, "Examples:\n");
+  fprintf(out, "  %s 8443\n", prog);
+  fprintf(out, "  %s 8443 server.key server.crt\n", prog);
+  fprintf(out, "\n");
+  fprintf(out, "Test with curl:\n");
+  fprintf(out, "  curl -v -k --http2 https://127.0.0.1:8443/\n");
+}
+
 static int flush_outbound(nghttp2_session *session) {
   int rv = nghttp2_session_send(session);
   if (rv != 0) {
@@ -465,13 +476,33 @@ int main(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
 
   const char *ip = "127.0.0.1";
-  uint16_t port = 8443;
+  uint16_t port = 0;
   const char *cert_pem = "server.crt";
   const char *key_pem  = "server.key";
 
-  if (argc >= 3) {
-    cert_pem = argv[1];
-    key_pem  = argv[2];
+  if (argc >= 2 &&
+      (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
+    print_usage(stdout, argv[0]);
+    return 0;
+  }
+
+  if (!(argc == 2 || argc == 4)) {
+    print_usage(stderr, argv[0]);
+    return 2;
+  }
+
+  char *endp = NULL;
+  unsigned long p = strtoul(argv[1], &endp, 10);
+  if (argv[1][0] == '\0' || endp == NULL || *endp != '\0' || p == 0 || p > 65535) {
+    fprintf(stderr, "Invalid port: %s\n", argv[1]);
+    print_usage(stderr, argv[0]);
+    return 2;
+  }
+  port = (uint16_t)p;
+
+  if (argc == 4) {
+    key_pem = argv[2];
+    cert_pem = argv[3];
   }
 
   // OpenSSL init
