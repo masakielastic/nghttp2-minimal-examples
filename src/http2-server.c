@@ -829,6 +829,8 @@ static int on_stream_close_callback(nghttp2_session *session,
    * Lifecycle close point:
    * - stream user data ownership ends when nghttp2 tells us stream closed.
    * - This covers both normal completion and reset/error closure paths.
+   * - body may be NULL for streams where no response body state was attached
+   *   (for example early error or closure before submit_simple_response()).
    * For teaching simplicity we do not branch on error_code here.
    * Production code often distinguishes normal close vs RST/protocol errors.
    */
