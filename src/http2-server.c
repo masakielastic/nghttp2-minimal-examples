@@ -270,24 +270,6 @@ static int read_and_feed(nghttp2_session *session, conn_t *conn,
 
 /* ---------- OpenSSL (ALPN h2) ---------- */
 
-static int alpn_select_cb(SSL *ssl,
-                          const unsigned char **out,
-                          unsigned char *outlen,
-                          const unsigned char *in,
-                          unsigned int inlen,
-                          void *arg) {
-  (void)ssl;
-  (void)arg;
-  /* "h2" in ALPN wire format: length-prefixed. */
-  static const unsigned char h2[] = {0x02, 'h', '2'};
-
-  if (SSL_select_next_proto((unsigned char **)out, outlen, h2, sizeof(h2), in, inlen) ==
-      OPENSSL_NPN_NEGOTIATED) {
-    return SSL_TLSEXT_ERR_OK;
-  }
-  return SSL_TLSEXT_ERR_NOACK;
-}
-
 static SSL_CTX *create_ssl_ctx(const char *cert_pem, const char *key_pem) {
   SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
   if (!ctx) openssl_die("SSL_CTX_new failed");
@@ -313,6 +295,24 @@ static SSL_CTX *create_ssl_ctx(const char *cert_pem, const char *key_pem) {
 #endif
 
   return ctx;
+}
+
+static int alpn_select_cb(SSL *ssl,
+                          const unsigned char **out,
+                          unsigned char *outlen,
+                          const unsigned char *in,
+                          unsigned int inlen,
+                          void *arg) {
+  (void)ssl;
+  (void)arg;
+  /* "h2" in ALPN wire format: length-prefixed. */
+  static const unsigned char h2[] = {0x02, 'h', '2'};
+
+  if (SSL_select_next_proto((unsigned char **)out, outlen, h2, sizeof(h2), in, inlen) ==
+      OPENSSL_NPN_NEGOTIATED) {
+    return SSL_TLSEXT_ERR_OK;
+  }
+  return SSL_TLSEXT_ERR_NOACK;
 }
 
 /* ---------- nghttp2 callbacks ---------- */
