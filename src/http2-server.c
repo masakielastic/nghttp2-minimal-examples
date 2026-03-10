@@ -148,6 +148,11 @@ static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls);
  *    - feed them into nghttp2 (frame parsing + callbacks)
  *    - flush pending outbound frames via nghttp2_session_send()
  * 6. Stop per-connection loop when the peer closes or session is done.
+ *
+ * h2c vs TLS note:
+ * - h2c here assumes prior knowledge: both sides start HTTP/2 immediately.
+ * - TLS mode must negotiate protocol with ALPN before using HTTP/2.
+ * - This sample does not implement HTTP/1.1 Upgrade -> h2c.
  */
 /*
  * Stage role of main():
@@ -291,6 +296,12 @@ static SSL_CTX *create_ssl_ctx(const char *cert_pem, const char *key_pem) {
   return ctx;
 }
 
+/*
+ * Why ALPN exists only in TLS mode:
+ * - For h2c in this sample, clients use prior knowledge and speak HTTP/2 directly.
+ * - For TLS, HTTP/2 must be explicitly negotiated during handshake (ALPN "h2").
+ * - If "h2" is not selected, we do not continue this connection as HTTP/2.
+ */
 static int alpn_select_cb(SSL *ssl,
                           const unsigned char **out,
                           unsigned char *outlen,
