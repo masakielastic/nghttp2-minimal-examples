@@ -752,6 +752,11 @@ static int submit_simple_response(nghttp2_session *session, int32_t stream_id) {
     free(body);
     return NGHTTP2_ERR_CALLBACK_FAILURE;
   }
+  /*
+   * MAKE_NV stores pointers to existing storage. In this example,
+   * content_length is passed to nghttp2_submit_response() immediately
+   * and we do not retain/manage this stack buffer ourselves afterward.
+   */
 
   /*
    * HTTP/2 uses pseudo-headers for control data.
