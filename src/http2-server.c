@@ -561,7 +561,11 @@ static ssize_t send_callback(nghttp2_session *session,
   return (ssize_t)length;
 }
 
-/* Per-header-field callback, not per-frame callback. */
+/*
+ * Per-header-field callback (not per-frame).
+ * A single HEADERS frame can trigger this callback multiple times:
+ * once for each decoded header field.
+ */
 static int on_header_callback(nghttp2_session *session,
                               const nghttp2_frame *frame,
                               const uint8_t *name, size_t namelen,
@@ -594,7 +598,10 @@ static int on_header_callback(nghttp2_session *session,
   return 0;
 }
 
-/* Per-data-chunk callback: request body bytes may arrive in multiple chunks. */
+/*
+ * Per-data-chunk callback.
+ * DATA payload bytes may arrive split across multiple callbacks.
+ */
 static int on_data_chunk_recv_callback(nghttp2_session *session,
                                        uint8_t flags,
                                        int32_t stream_id,
@@ -608,7 +615,11 @@ static int on_data_chunk_recv_callback(nghttp2_session *session,
   return 0;
 }
 
-/* Per-frame callback: useful for understanding frame-level events. */
+/*
+ * Per-frame callback: entry point for frame-level observation.
+ * We inspect frame header flags here (for example END_STREAM) because
+ * END_STREAM is a frame-flag concept, not a per-header-field concept.
+ */
 static int on_frame_recv_callback(nghttp2_session *session,
                                   const nghttp2_frame *frame,
                                   void *user_data) {
@@ -619,6 +630,12 @@ static int on_frame_recv_callback(nghttp2_session *session,
             (frame->hd.flags & NGHTTP2_FLAG_ACK) ? " ACK" : "");
   }
 
+  /*
+   * END_STREAM is carried on the frame header flags. For request handling
+   * in this sample, we decide response timing at frame granularity here,
+   * instead of in on_header_callback(), because header callbacks are
+   * per-field and do not represent whole-frame completion by themselves.
+   */
   if (frame->hd.stream_id > 0 && (frame->hd.flags & NGHTTP2_FLAG_END_STREAM)) {
     fprintf(stderr, "END_STREAM seen on frame type=%u (stream=%d)\n",
             frame->hd.type, frame->hd.stream_id);
@@ -636,6 +653,14 @@ static int on_frame_recv_callback(nghttp2_session *session,
 }
 
 static int submit_simple_response(nghttp2_session *session, int32_t stream_id) {
+  /*
+   * Ownership/lifecycle model for response body state:
+   * - Response payload state must outlive this function because nghttp2
+   *   pulls DATA later via data_read_callback() during session_send().
+   * - Therefore we allocate stream_body_t on heap (not stack).
+   * - We attach it to stream user data so callbacks can find it by stream.
+   * - It is reclaimed in on_stream_close_callback() when stream ends.
+   */
   stream_body_t *body = (stream_body_t *)calloc(1, sizeof(stream_body_t));
   if (!body) return NGHTTP2_ERR_CALLBACK_FAILURE;
   body->data = RESPONSE_PAYLOAD;
@@ -711,6 +736,11 @@ static int on_stream_close_callback(nghttp2_session *session,
                                     void *user_data) {
   (void)error_code;
   (void)user_data;
+  /*
+   * Lifecycle close point:
+   * - stream user data ownership ends when nghttp2 tells us stream closed.
+   * - This covers both normal completion and reset/error closure paths.
+   */
   stream_body_t *body = (stream_body_t *)nghttp2_session_get_stream_user_data(session, stream_id);
   if (body) {
     free(body);
