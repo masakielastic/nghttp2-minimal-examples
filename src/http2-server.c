@@ -679,6 +679,10 @@ static int on_frame_recv_callback(nghttp2_session *session,
    * instead of in on_header_callback(), because header callbacks are
    * per-field and do not represent whole-frame completion by themselves.
    */
+  /*
+   * stream_id == 0 -> connection-level frame
+   * stream_id > 0  -> stream-specific frame
+   */
   if (frame->hd.stream_id > 0 && (frame->hd.flags & NGHTTP2_FLAG_END_STREAM)) {
     fprintf(stderr, "[event] END_STREAM stream=%d frame_type=%u\n",
             frame->hd.stream_id, frame->hd.type);
@@ -749,6 +753,15 @@ static int submit_simple_response(nghttp2_session *session, int32_t stream_id) {
   dp.source.ptr = body;
   dp.read_callback = data_read_callback;
 
+  /*
+   * nghttp2_submit_response() internally schedules:
+   *
+   *   HEADERS frame  (response headers)
+   *   DATA frame(s)  (body via data_read_callback)
+   *
+   * nghttp2 will later invoke data_read_callback()
+   * when it needs payload bytes.
+   */
   int rv = nghttp2_submit_response(session, stream_id, hdrs,
                                    (size_t)(sizeof(hdrs) / sizeof(hdrs[0])), &dp);
   if (rv != 0) {
