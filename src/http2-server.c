@@ -149,6 +149,14 @@ static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls);
  *    - flush pending outbound frames via nghttp2_session_send()
  * 6. Stop per-connection loop when the peer closes or session is done.
  */
+/*
+ * Stage role of main():
+ * - Startup and mode selection (h2c or TLS).
+ * - Build shared server resources (SSL_CTX in TLS mode, listen socket).
+ * - Accept connections and hand each one to serve_one_connection().
+ *
+ * Per-connection protocol work is intentionally delegated.
+ */
 int main(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
 
@@ -330,6 +338,14 @@ static int create_listen_socket(const char *ip, uint16_t port) {
 
 /* ---------- per-connection loop ---------- */
 
+/*
+ * Stage role of serve_one_connection():
+ * - Establish transport for one client (TCP only, or TLS handshake + ALPN).
+ * - Create nghttp2 session and queue initial SETTINGS.
+ * - Run the per-connection loop:
+ *   read transport bytes -> feed nghttp2 -> flush outbound frames.
+ * - Perform stream/session shutdown cleanup for this connection.
+ */
 static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls) {
   conn_t conn;
   memset(&conn, 0, sizeof(conn));
@@ -416,6 +432,14 @@ static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls) {
 
 static int read_and_feed(nghttp2_session *session, conn_t *conn,
                          uint8_t *buf, size_t buf_len) {
+  /*
+   * Stage role of read_and_feed():
+   * - Read raw bytes from TCP/TLS transport.
+   * - Pass received bytes to nghttp2_session_mem_recv().
+   * - Let nghttp2 parse frames and trigger registered callbacks.
+   *
+   * This function is the boundary between transport I/O and HTTP/2 parsing.
+   */
   ssize_t n = 0;
 
   /*
