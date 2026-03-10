@@ -405,6 +405,10 @@ static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls) {
     if (!(alpn_len == 2 && memcmp(alpn, "h2", 2) == 0)) {
       fprintf(stderr, "Client did not negotiate h2 via ALPN (got: %.*s). Closing.\n",
               (int)alpn_len, alpn ? (const char *)alpn : "");
+      /*
+       * Proper TLS shutdown can involve two-phase close_notify exchange.
+       * This sample performs a simplified shutdown for clarity.
+       */
       SSL_shutdown(conn.ssl);
       SSL_free(conn.ssl);
       close(client_fd);
