@@ -218,56 +218,6 @@ static int flush_outbound(nghttp2_session *session) {
   return 0;
 }
 
-static int read_and_feed(nghttp2_session *session, conn_t *conn,
-                         uint8_t *buf, size_t buf_len) {
-  ssize_t n = 0;
-
-  /*
-   * One read() call may contain:
-   * - part of one HTTP/2 frame
-   * - exactly one frame
-   * - multiple frames
-   *
-   * nghttp2_session_mem_recv() handles buffering/parsing for us.
-   */
-  if (conn->use_tls) {
-    n = SSL_read(conn->ssl, buf, (int)buf_len);
-    if (n == 0) return 1; /* peer closed TLS connection */
-    if (n < 0) {
-      int err = SSL_get_error(conn->ssl, (int)n);
-      if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-        return 0; /* rare in blocking mode */
-      }
-      fprintf(stderr, "SSL_read failed (err=%d)\n", err);
-      ERR_print_errors_fp(stderr);
-      return -1;
-    }
-  } else {
-    n = recv(conn->fd, buf, buf_len, 0);
-    if (n == 0) return 1; /* peer closed TCP connection */
-    if (n < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        return 0;
-      }
-      perror("recv");
-      return -1;
-    }
-  }
-
-  ssize_t fed = nghttp2_session_mem_recv(session, buf, (size_t)n);
-  if (fed < 0) {
-    fprintf(stderr, "nghttp2_session_mem_recv error: %s\n", nghttp2_strerror((int)fed));
-    return -1;
-  }
-  /*
-   * In this sample, we pass exactly one read() buffer to mem_recv()
-   * and treat it as fully handed off to nghttp2.
-   * More advanced designs may handle consumed-byte accounting (fed vs n)
-   * more strictly across staged input buffers.
-   */
-  return 0;
-}
-
 /* ---------- OpenSSL (ALPN h2) ---------- */
 
 static SSL_CTX *create_ssl_ctx(const char *cert_pem, const char *key_pem) {
@@ -316,53 +266,6 @@ static int alpn_select_cb(SSL *ssl,
 }
 
 /* ---------- nghttp2 callbacks ---------- */
-
-static int submit_simple_response(nghttp2_session *session, int32_t stream_id) {
-  stream_body_t *body = (stream_body_t *)calloc(1, sizeof(stream_body_t));
-  if (!body) return NGHTTP2_ERR_CALLBACK_FAILURE;
-  body->data = RESPONSE_PAYLOAD;
-  body->len = sizeof(RESPONSE_PAYLOAD) - 1;
-  body->off = 0;
-
-  nghttp2_session_set_stream_user_data(session, stream_id, body);
-
-  char content_length[32];
-  int nw = snprintf(content_length, sizeof(content_length), "%zu", body->len);
-  if (nw < 0 || (size_t)nw >= sizeof(content_length)) {
-    nghttp2_session_set_stream_user_data(session, stream_id, NULL);
-    free(body);
-    return NGHTTP2_ERR_CALLBACK_FAILURE;
-  }
-
-  /*
-   * HTTP/2 uses pseudo-headers for control data.
-   * For responses, ":status" replaces the HTTP/1.1 status line:
-   *
-   *   HTTP/1.1 200 OK
-   *
-   * becomes:
-   *   :status = 200
-   */
-  nghttp2_nv hdrs[] = {
-      MAKE_NV(":status", "200"),
-      MAKE_NV("content-type", "text/plain; charset=utf-8"),
-      MAKE_NV("content-length", content_length),
-  };
-
-  nghttp2_data_provider dp;
-  memset(&dp, 0, sizeof(dp));
-  dp.source.ptr = body;
-  dp.read_callback = data_read_callback;
-
-  int rv = nghttp2_submit_response(session, stream_id, hdrs,
-                                   (size_t)(sizeof(hdrs) / sizeof(hdrs[0])), &dp);
-  if (rv != 0) {
-    nghttp2_session_set_stream_user_data(session, stream_id, NULL);
-    free(body);
-    return NGHTTP2_ERR_CALLBACK_FAILURE;
-  }
-  return 0;
-}
 
 /* ---------- TCP helpers ---------- */
 
@@ -473,6 +376,56 @@ static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls) {
     SSL_free(conn.ssl);
   }
   close(client_fd);
+}
+
+static int read_and_feed(nghttp2_session *session, conn_t *conn,
+                         uint8_t *buf, size_t buf_len) {
+  ssize_t n = 0;
+
+  /*
+   * One read() call may contain:
+   * - part of one HTTP/2 frame
+   * - exactly one frame
+   * - multiple frames
+   *
+   * nghttp2_session_mem_recv() handles buffering/parsing for us.
+   */
+  if (conn->use_tls) {
+    n = SSL_read(conn->ssl, buf, (int)buf_len);
+    if (n == 0) return 1; /* peer closed TLS connection */
+    if (n < 0) {
+      int err = SSL_get_error(conn->ssl, (int)n);
+      if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+        return 0; /* rare in blocking mode */
+      }
+      fprintf(stderr, "SSL_read failed (err=%d)\n", err);
+      ERR_print_errors_fp(stderr);
+      return -1;
+    }
+  } else {
+    n = recv(conn->fd, buf, buf_len, 0);
+    if (n == 0) return 1; /* peer closed TCP connection */
+    if (n < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return 0;
+      }
+      perror("recv");
+      return -1;
+    }
+  }
+
+  ssize_t fed = nghttp2_session_mem_recv(session, buf, (size_t)n);
+  if (fed < 0) {
+    fprintf(stderr, "nghttp2_session_mem_recv error: %s\n", nghttp2_strerror((int)fed));
+    return -1;
+  }
+  /*
+   * In this sample, we pass exactly one read() buffer to mem_recv()
+   * and treat it as fully handed off to nghttp2.
+   * More advanced designs may handle consumed-byte accounting (fed vs n)
+   * more strictly across staged input buffers.
+   */
+  return 0;
 }
 
 static nghttp2_session *setup_h2_session(conn_t *conn) {
@@ -631,6 +584,53 @@ static int on_frame_recv_callback(nghttp2_session *session,
     }
   }
 
+  return 0;
+}
+
+static int submit_simple_response(nghttp2_session *session, int32_t stream_id) {
+  stream_body_t *body = (stream_body_t *)calloc(1, sizeof(stream_body_t));
+  if (!body) return NGHTTP2_ERR_CALLBACK_FAILURE;
+  body->data = RESPONSE_PAYLOAD;
+  body->len = sizeof(RESPONSE_PAYLOAD) - 1;
+  body->off = 0;
+
+  nghttp2_session_set_stream_user_data(session, stream_id, body);
+
+  char content_length[32];
+  int nw = snprintf(content_length, sizeof(content_length), "%zu", body->len);
+  if (nw < 0 || (size_t)nw >= sizeof(content_length)) {
+    nghttp2_session_set_stream_user_data(session, stream_id, NULL);
+    free(body);
+    return NGHTTP2_ERR_CALLBACK_FAILURE;
+  }
+
+  /*
+   * HTTP/2 uses pseudo-headers for control data.
+   * For responses, ":status" replaces the HTTP/1.1 status line:
+   *
+   *   HTTP/1.1 200 OK
+   *
+   * becomes:
+   *   :status = 200
+   */
+  nghttp2_nv hdrs[] = {
+      MAKE_NV(":status", "200"),
+      MAKE_NV("content-type", "text/plain; charset=utf-8"),
+      MAKE_NV("content-length", content_length),
+  };
+
+  nghttp2_data_provider dp;
+  memset(&dp, 0, sizeof(dp));
+  dp.source.ptr = body;
+  dp.read_callback = data_read_callback;
+
+  int rv = nghttp2_submit_response(session, stream_id, hdrs,
+                                   (size_t)(sizeof(hdrs) / sizeof(hdrs[0])), &dp);
+  if (rv != 0) {
+    nghttp2_session_set_stream_user_data(session, stream_id, NULL);
+    free(body);
+    return NGHTTP2_ERR_CALLBACK_FAILURE;
+  }
   return 0;
 }
 
