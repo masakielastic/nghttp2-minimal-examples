@@ -520,29 +520,6 @@ static ssize_t send_callback(nghttp2_session *session,
   return (ssize_t)length;
 }
 
-static ssize_t data_read_callback(nghttp2_session *session,
-                                  int32_t stream_id,
-                                  uint8_t *buf, size_t length,
-                                  uint32_t *data_flags,
-                                  nghttp2_data_source *source,
-                                  void *user_data) {
-  (void)session;
-  (void)stream_id;
-  (void)user_data;
-  stream_body_t *body = (stream_body_t *)source->ptr;
-
-  size_t remain = body->len - body->off;
-  size_t ncopy = remain < length ? remain : length;
-  if (ncopy > 0) {
-    memcpy(buf, body->data + body->off, ncopy);
-    body->off += ncopy;
-  }
-  if (body->off >= body->len) {
-    *data_flags |= NGHTTP2_DATA_FLAG_EOF;
-  }
-  return (ssize_t)ncopy;
-}
-
 /* Per-header-field callback, not per-frame callback. */
 static int on_header_callback(nghttp2_session *session,
                               const nghttp2_frame *frame,
@@ -662,6 +639,29 @@ static int submit_simple_response(nghttp2_session *session, int32_t stream_id) {
     return NGHTTP2_ERR_CALLBACK_FAILURE;
   }
   return 0;
+}
+
+static ssize_t data_read_callback(nghttp2_session *session,
+                                  int32_t stream_id,
+                                  uint8_t *buf, size_t length,
+                                  uint32_t *data_flags,
+                                  nghttp2_data_source *source,
+                                  void *user_data) {
+  (void)session;
+  (void)stream_id;
+  (void)user_data;
+  stream_body_t *body = (stream_body_t *)source->ptr;
+
+  size_t remain = body->len - body->off;
+  size_t ncopy = remain < length ? remain : length;
+  if (ncopy > 0) {
+    memcpy(buf, body->data + body->off, ncopy);
+    body->off += ncopy;
+  }
+  if (body->off >= body->len) {
+    *data_flags |= NGHTTP2_DATA_FLAG_EOF;
+  }
+  return (ssize_t)ncopy;
 }
 
 static int on_stream_close_callback(nghttp2_session *session,
