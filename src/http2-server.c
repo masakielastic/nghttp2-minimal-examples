@@ -54,6 +54,9 @@
  * This helper points nghttp2_nv to existing string storage.
  * The pointed strings must remain valid while nghttp2 uses them.
  * Fine for this minimal example, but real code should document ownership clearly.
+ * It also calls strlen() for NAME/VALUE every time this macro expands.
+ * In this file we pass string literals, which keeps usage simple/safe enough.
+ * Be careful when generalizing to non-literals or temporary buffers.
  */
 #define MAKE_NV(NAME, VALUE)                                                   \
   (nghttp2_nv){                                                                \
@@ -503,8 +506,9 @@ static int read_and_feed(nghttp2_session *session, conn_t *conn,
   /*
    * In this sample, we pass exactly one read() buffer to mem_recv()
    * and treat it as fully handed off to nghttp2.
-   * More advanced designs may handle consumed-byte accounting (fed vs n)
-   * more strictly across staged input buffers.
+   * Here we keep flow simple and do not carry partial input across calls.
+   * More advanced designs may track consumed-byte accounting (fed vs n)
+   * explicitly and preserve unconsumed bytes for later parsing.
    */
   return 0;
 }
@@ -537,7 +541,10 @@ static nghttp2_session *setup_h2_session(conn_t *conn) {
   return session;
 }
 
-/* nghttp2 calls this when it has serialized outbound HTTP/2 bytes. */
+/*
+ * nghttp2 calls this when it has serialized outbound HTTP/2 bytes.
+ * We loop because TLS/TCP write calls may send only part of the buffer.
+ */
 static ssize_t send_callback(nghttp2_session *session,
                              const uint8_t *data, size_t length,
                              int flags, void *user_data) {
@@ -748,13 +755,15 @@ static int on_stream_close_callback(nghttp2_session *session,
                                     int32_t stream_id,
                                     uint32_t error_code,
                                     void *user_data) {
-  (void)error_code;
   (void)user_data;
   /*
    * Lifecycle close point:
    * - stream user data ownership ends when nghttp2 tells us stream closed.
    * - This covers both normal completion and reset/error closure paths.
+   * For teaching simplicity we do not branch on error_code here.
+   * Production code often distinguishes normal close vs RST/protocol errors.
    */
+  (void)error_code;
   stream_body_t *body = (stream_body_t *)nghttp2_session_get_stream_user_data(session, stream_id);
   if (body) {
     free(body);
