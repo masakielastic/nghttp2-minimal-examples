@@ -1,8 +1,31 @@
-// tls_h2_server.c
-// Minimal blocking HTTP/2 server in two modes:
-// - h2c (cleartext) with prior knowledge
-// - TLS + ALPN "h2"
-// Single-thread, handles one connection at a time.
+/*
+ * What this example demonstrates:
+ * 1. Start a minimal HTTP/2 server with nghttp2 in h2c or TLS mode.
+ * 2. Create an nghttp2 server session and send initial SETTINGS.
+ * 3. Parse inbound request frames and observe callbacks.
+ * 4. Submit one simple response when END_STREAM is observed.
+ *
+ * This is intentionally blocking and single-connection.
+ * It is designed for learning, not for production use.
+ *
+ * Deliberately omitted for clarity:
+ * - nonblocking I/O
+ * - multiple concurrent connections
+ * - full request-body processing
+ * - routing / application framework integration
+ * - timeout / retry logic
+ * - graceful GOAWAY and shutdown orchestration
+ *
+ * Build:
+ *   gcc -Wall -Wextra -O2 src/http2-server.c -o http2-server \
+ *      $(pkg-config --cflags --libs libnghttp2 openssl)
+ *
+ * Run (h2c):
+ *   ./http2-server 8080
+ *
+ * Run (TLS + ALPN h2):
+ *   ./http2-server 8443 server.key server.crt
+ */
 
 #define _POSIX_C_SOURCE 200809L
 
