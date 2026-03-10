@@ -504,11 +504,11 @@ static int read_and_feed(nghttp2_session *session, conn_t *conn,
     return -1;
   }
   /*
-   * In this sample, we pass exactly one read() buffer to mem_recv()
-   * and treat it as fully handed off to nghttp2.
-   * Here we keep flow simple and do not carry partial input across calls.
-   * More advanced designs may track consumed-byte accounting (fed vs n)
-   * explicitly and preserve unconsumed bytes for later parsing.
+   * fed tells how many bytes nghttp2 actually consumed (fed <= n).
+   * In more advanced designs, remaining bytes (n - fed) may need to
+   * be preserved and fed again later.
+   *
+   * This sample intentionally ignores that complexity.
    */
   return 0;
 }
