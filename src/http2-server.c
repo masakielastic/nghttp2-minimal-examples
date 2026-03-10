@@ -667,6 +667,11 @@ static int on_frame_recv_callback(nghttp2_session *session,
                                   const nghttp2_frame *frame,
                                   void *user_data) {
   (void)user_data;
+  /*
+   * Multiple streams can be active simultaneously in HTTP/2.
+   * This sample does not implement real concurrency,
+   * but nghttp2 still tracks each stream independently.
+   */
 
   if (frame->hd.type == NGHTTP2_SETTINGS) {
     fprintf(stderr, "[frame] SETTINGS%s\n",
