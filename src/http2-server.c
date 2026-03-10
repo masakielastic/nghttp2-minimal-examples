@@ -129,12 +129,19 @@ static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls);
 
 /*
  * High-level flow:
- * 1. Parse mode from args:
- *    - <PORT>            => h2c (prior knowledge)
- *    - <PORT> <KEY> <CERT> => TLS + ALPN h2
- * 2. Create listen socket.
- * 3. Accept one TCP client at a time.
- * 4. For each client, run nghttp2 read/feed + send loop until done.
+ * 1. Parse startup mode from args:
+ *    - <PORT> => h2c (cleartext HTTP/2 prior knowledge)
+ *    - <PORT> <KEY> <CERT> => TLS + ALPN "h2"
+ * 2. In TLS mode, initialize OpenSSL and build SSL_CTX.
+ * 3. Create a TCP listen socket.
+ * 4. Repeatedly accept one client connection (sequential/blocking).
+ * 5. For each connection:
+ *    - complete transport setup (plain TCP or TLS handshake)
+ *    - create an nghttp2 server session and submit initial SETTINGS
+ *    - read bytes from transport
+ *    - feed them into nghttp2 (frame parsing + callbacks)
+ *    - flush pending outbound frames via nghttp2_session_send()
+ * 6. Stop per-connection loop when the peer closes or session is done.
  */
 int main(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
