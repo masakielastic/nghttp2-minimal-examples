@@ -4,9 +4,7 @@ This repository provides educational minimal examples for HTTP/2 in C using **ng
 
 Current content:
 - Client example (`src/http2-client.c`)
-
-Planned additions:
-- Server example and walkthrough
+- Server example (`src/http2-server.c`)
 
 ## Client Example Overview
 
@@ -159,3 +157,84 @@ The key loop is:
 submit request -> serialize frames -> send via TLS -> read via TLS -> feed to nghttp2 -> handle callbacks
 
 This model is the foundation for building more advanced HTTP/2 clients and servers.
+
+## Server Example Overview
+
+The server example is intentionally minimal and focuses on core nghttp2 server flow.
+
+The server supports two startup modes:
+- `./http2-server 8080` for h2c prior knowledge
+- `./http2-server 8443 server.key server.crt` for TLS + ALPN `h2`
+
+To keep the flow readable:
+- blocking I/O is used
+- one connection is handled at a time
+- error handling is simplified
+
+The goal is to understand how transport setup and nghttp2 callbacks fit together.
+
+## High-Level Flow (Server)
+
+1. Parse CLI args and choose h2c or TLS mode
+2. In TLS mode, initialize OpenSSL and create `SSL_CTX`
+3. Create a TCP listen socket
+4. Accept one connection
+5. Perform transport setup:
+   - plain TCP for h2c
+   - TLS handshake + ALPN check for HTTPS
+6. Create nghttp2 server session and register callbacks
+7. Submit initial server `SETTINGS`
+8. Flush outbound frames with `nghttp2_session_send()`
+9. Loop:
+   - read TCP/TLS bytes
+   - feed bytes to `nghttp2_session_mem_recv()`
+   - handle callbacks and generated frames
+   - flush outbound frames
+10. Submit a response when request `END_STREAM` is observed
+11. Clean up stream state on stream close
+12. Close the connection
+
+## h2c vs TLS (Server)
+
+- h2c mode in this sample assumes prior knowledge (HTTP/2 from first bytes)
+- TLS mode negotiates HTTP/2 via ALPN (`h2`)
+- HTTP/1.1 Upgrade to h2c is intentionally not implemented
+
+## Callback Granularity (Server)
+
+- `on_header_callback()`: per decoded header field (not per frame)
+- `on_data_chunk_recv_callback()`: per DATA chunk
+- `on_frame_recv_callback()`: per frame (used to inspect `END_STREAM`)
+- `on_stream_close_callback()`: stream-lifecycle cleanup point
+
+## Stream-Local State Pattern
+
+The server uses a common event-driven pattern:
+- allocate response body state on heap (`stream_body_t`)
+- attach it with `nghttp2_session_set_stream_user_data()`
+- provide payload lazily via `data_read_callback()`
+- free it in `on_stream_close_callback()`
+
+This is an application-side attachment point for callback-to-callback state transfer.
+
+## Build and Run (Server)
+
+Build:
+
+```bash
+gcc -Wall -Wextra -O2 src/http2-server.c -o http2-server $(pkg-config --cflags --libs libnghttp2 openssl)
+```
+
+Run (h2c):
+
+```bash
+./http2-server 8080
+curl -v --http2-prior-knowledge http://127.0.0.1:8080/
+```
+
+Run (TLS + ALPN h2):
+
+```bash
+./http2-server 8443 server.key server.crt
+curl -v -k --http2 https://127.0.0.1:8443/
+```
