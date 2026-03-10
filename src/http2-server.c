@@ -524,9 +524,10 @@ static int read_and_feed(nghttp2_session *session, conn_t *conn,
  *   - connection preface
  *   - SETTINGS
  *
- * Server responds with:
+ * Server sends:
  *   - SETTINGS
- *   - SETTINGS ACK
+ *
+ * Then both peers ACK the SETTINGS they received from the other side.
  *
  * nghttp2 handles parsing of the client preface internally.
  * This program explicitly submits the server SETTINGS frame.
