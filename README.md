@@ -6,6 +6,35 @@ Current content:
 - Client example (`src/http2-client.c`)
 - Server example (`src/http2-server.c`)
 
+## Quick Start (Build and Run)
+
+Build both examples:
+
+```bash
+gcc -Wall -Wextra -O2 src/http2-client.c -o client $(pkg-config --cflags --libs libnghttp2 openssl)
+gcc -Wall -Wextra -O2 src/http2-server.c -o http2-server $(pkg-config --cflags --libs libnghttp2 openssl)
+```
+
+Run server (h2c):
+
+```bash
+./http2-server 8080
+curl -v --http2-prior-knowledge http://127.0.0.1:8080/
+```
+
+Run server (TLS + ALPN h2):
+
+```bash
+./http2-server 8443 server.key server.crt
+curl -v -k --http2 https://127.0.0.1:8443/
+```
+
+Run client:
+
+```bash
+./client example.com 443 /
+```
+
 ## Client Example Overview
 
 The client example is intentionally minimal and focuses on core nghttp2 usage.
@@ -127,20 +156,6 @@ These are passed to `nghttp2_submit_request()`.
 - GOAWAY handling
 - advanced error handling
 
-## Build and Run (Client)
-
-Build:
-
-```bash
-gcc -Wall -Wextra -O2 src/http2-client.c -o client $(pkg-config --cflags --libs libnghttp2 openssl)
-```
-
-Run:
-
-```bash
-./client example.com 443 /
-```
-
 ## Recommended Reading Order
 
 1. `main()`
@@ -256,25 +271,3 @@ The server uses a common event-driven pattern:
 - free it in `on_stream_close_callback()`
 
 This is an application-side attachment point for callback-to-callback state transfer.
-
-## Build and Run (Server)
-
-Build:
-
-```bash
-gcc -Wall -Wextra -O2 src/http2-server.c -o http2-server $(pkg-config --cflags --libs libnghttp2 openssl)
-```
-
-Run (h2c):
-
-```bash
-./http2-server 8080
-curl -v --http2-prior-knowledge http://127.0.0.1:8080/
-```
-
-Run (TLS + ALPN h2):
-
-```bash
-./http2-server 8443 server.key server.crt
-curl -v -k --http2 https://127.0.0.1:8443/
-```
