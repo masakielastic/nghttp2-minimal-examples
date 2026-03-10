@@ -567,6 +567,9 @@ static nghttp2_session *setup_h2_session(conn_t *conn) {
  * nghttp2 has already serialized HTTP/2 frames.
  * This callback is responsible only for transporting those bytes
  * over TCP or TLS.
+ * This callback is frame-agnostic.
+ * It does not know HTTP/2 frame boundaries; it only writes serialized bytes.
+ * One call may contain partial frame bytes or multiple frames worth of bytes.
  *
  * In other words:
  *   nghttp2 = protocol layer
