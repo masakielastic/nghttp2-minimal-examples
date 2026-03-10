@@ -738,6 +738,11 @@ static int submit_simple_response(nghttp2_session *session, int32_t stream_id) {
   body->len = sizeof(RESPONSE_PAYLOAD) - 1;
   body->off = 0;
 
+  /*
+   * stream user data is an application-side attachment point.
+   * It is a common event-driven pattern: attach per-stream app state here,
+   * then retrieve it from later callbacks that operate on the same stream.
+   */
   nghttp2_session_set_stream_user_data(session, stream_id, body);
 
   char content_length[32];
