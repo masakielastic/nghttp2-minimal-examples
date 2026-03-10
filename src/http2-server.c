@@ -513,6 +513,20 @@ static int read_and_feed(nghttp2_session *session, conn_t *conn,
   return 0;
 }
 
+/*
+ * HTTP/2 connection start sequence (simplified):
+ *
+ * Client sends:
+ *   - connection preface
+ *   - SETTINGS
+ *
+ * Server responds with:
+ *   - SETTINGS
+ *   - SETTINGS ACK
+ *
+ * nghttp2 handles parsing of the client preface internally.
+ * This program explicitly submits the server SETTINGS frame.
+ */
 static nghttp2_session *setup_h2_session(conn_t *conn) {
   nghttp2_session_callbacks *cbs = NULL;
   nghttp2_session *session = NULL;
