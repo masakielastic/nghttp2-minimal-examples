@@ -194,6 +194,46 @@ The goal is to understand how transport setup and nghttp2 callbacks fit together
 11. Clean up stream state on stream close
 12. Close the connection
 
+## nghttp2 Call Sequence (Server)
+
+```c
+nghttp2_session_callbacks *cbs = NULL;
+nghttp2_session *session = NULL;
+
+nghttp2_session_callbacks_new(&cbs);
+nghttp2_session_callbacks_set_send_callback(cbs, send_callback);
+nghttp2_session_callbacks_set_on_header_callback(cbs, on_header_callback);
+nghttp2_session_callbacks_set_on_data_chunk_recv_callback(cbs, on_data_chunk_recv_callback);
+nghttp2_session_callbacks_set_on_frame_recv_callback(cbs, on_frame_recv_callback);
+nghttp2_session_callbacks_set_on_stream_close_callback(cbs, on_stream_close_callback);
+
+nghttp2_session_server_new(&session, cbs, conn);
+nghttp2_session_callbacks_del(cbs);
+
+nghttp2_settings_entry iv[1] = {
+    {NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, MAX_CONCURRENT_STREAMS}
+};
+nghttp2_submit_settings(session, NGHTTP2_FLAG_NONE, iv, 1);
+
+nghttp2_session_send(session);
+
+for (;;) {
+    ssize_t fed = nghttp2_session_mem_recv(session, buf, (size_t)n);
+    if (fed < 0) {
+        break;
+    }
+
+    nghttp2_session_send(session);
+
+    if (nghttp2_session_want_read(session) == 0 &&
+        nghttp2_session_want_write(session) == 0) {
+        break;
+    }
+}
+
+nghttp2_session_del(session);
+```
+
 ## h2c vs TLS (Server)
 
 - h2c mode in this sample assumes prior knowledge (HTTP/2 from first bytes)
