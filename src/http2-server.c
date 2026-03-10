@@ -128,6 +128,12 @@ static int create_listen_socket(const char *ip, uint16_t port);
 static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls);
 
 /*
+ * Sans I/O responsibility split:
+ * - nghttp2 is a protocol engine (frame serialize/parse + callbacks).
+ * - nghttp2 does not open sockets or perform read/write by itself.
+ * - this program owns transport I/O (TCP/TLS read/write) and feeds bytes
+ *   into / pulls bytes from nghttp2.
+ *
  * High-level flow:
  * 1. Parse startup mode from args:
  *    - <PORT> => h2c (cleartext HTTP/2 prior knowledge)
