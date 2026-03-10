@@ -558,6 +558,14 @@ static nghttp2_session *setup_h2_session(conn_t *conn) {
 /*
  * nghttp2 calls this when it has serialized outbound HTTP/2 bytes.
  * We loop because TLS/TCP write calls may send only part of the buffer.
+ *
+ * nghttp2 has already serialized HTTP/2 frames.
+ * This callback is responsible only for transporting those bytes
+ * over TCP or TLS.
+ *
+ * In other words:
+ *   nghttp2 = protocol layer
+ *   this callback = transport layer
  */
 static ssize_t send_callback(nghttp2_session *session,
                              const uint8_t *data, size_t length,
