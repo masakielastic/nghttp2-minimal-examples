@@ -64,7 +64,7 @@
 
 #define RECV_BUF_SIZE (16 * 1024)
 #define MAX_CONCURRENT_STREAMS 100
-static const uint8_t RESPONSE_PAYLOAD[] = "Hello HTTP/2 over TLS\n";
+static const uint8_t RESPONSE_PAYLOAD[] = "Hello HTTP/2\n";
 
 typedef struct {
   int fd;
@@ -356,6 +356,10 @@ static int create_listen_socket(const char *ip, uint16_t port) {
  * - Run the per-connection loop:
  *   read transport bytes -> feed nghttp2 -> flush outbound frames.
  * - Perform stream/session shutdown cleanup for this connection.
+ *
+ * Error-handling policy for this teaching sample:
+ * - Prioritize control-flow clarity over recovery sophistication.
+ * - On most errors, close this connection and return to accept loop.
  */
 static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls) {
   conn_t conn;
@@ -590,7 +594,7 @@ static int on_header_callback(nghttp2_session *session,
    */
   if (frame->hd.type == NGHTTP2_HEADERS &&
       frame->headers.cat == NGHTTP2_HCAT_REQUEST) {
-    fprintf(stderr, "Req-H (stream=%d): %.*s: %.*s\n",
+    fprintf(stderr, "[header] stream=%d %.*s=%.*s\n",
             frame->hd.stream_id,
             (int)namelen, (const char *)name,
             (int)valuelen, (const char *)value);
@@ -611,7 +615,7 @@ static int on_data_chunk_recv_callback(nghttp2_session *session,
   (void)flags;
   (void)data;
   (void)user_data;
-  fprintf(stderr, "Req-DATA chunk (stream=%d, len=%zu)\n", stream_id, len);
+  fprintf(stderr, "[data] stream=%d len=%zu\n", stream_id, len);
   return 0;
 }
 
@@ -626,7 +630,7 @@ static int on_frame_recv_callback(nghttp2_session *session,
   (void)user_data;
 
   if (frame->hd.type == NGHTTP2_SETTINGS) {
-    fprintf(stderr, "Received SETTINGS%s\n",
+    fprintf(stderr, "[frame] SETTINGS%s\n",
             (frame->hd.flags & NGHTTP2_FLAG_ACK) ? " ACK" : "");
   }
 
@@ -637,8 +641,8 @@ static int on_frame_recv_callback(nghttp2_session *session,
    * per-field and do not represent whole-frame completion by themselves.
    */
   if (frame->hd.stream_id > 0 && (frame->hd.flags & NGHTTP2_FLAG_END_STREAM)) {
-    fprintf(stderr, "END_STREAM seen on frame type=%u (stream=%d)\n",
-            frame->hd.type, frame->hd.stream_id);
+    fprintf(stderr, "[event] END_STREAM stream=%d frame_type=%u\n",
+            frame->hd.stream_id, frame->hd.type);
 
     if ((frame->hd.type == NGHTTP2_HEADERS &&
          frame->headers.cat == NGHTTP2_HCAT_REQUEST) ||
