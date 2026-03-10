@@ -43,6 +43,135 @@ typedef struct {
   size_t off;
 } stream_body_t;
 
+/* ---- Declarations ---- */
+static void die(const char *msg);
+static void openssl_die(const char *msg);
+static void print_usage(FILE *out, const char *prog);
+
+static int flush_outbound(nghttp2_session *session);
+static int read_and_feed(nghttp2_session *session, conn_t *conn,
+                         uint8_t *buf, size_t buf_len);
+
+static int alpn_select_cb(SSL *ssl,
+                          const unsigned char **out,
+                          unsigned char *outlen,
+                          const unsigned char *in,
+                          unsigned int inlen,
+                          void *arg);
+static SSL_CTX *create_ssl_ctx(const char *cert_pem, const char *key_pem);
+
+static ssize_t send_callback(nghttp2_session *session,
+                             const uint8_t *data, size_t length,
+                             int flags, void *user_data);
+static ssize_t data_read_callback(nghttp2_session *session,
+                                  int32_t stream_id,
+                                  uint8_t *buf, size_t length,
+                                  uint32_t *data_flags,
+                                  nghttp2_data_source *source,
+                                  void *user_data);
+static int submit_simple_response(nghttp2_session *session, int32_t stream_id);
+static int on_header_callback(nghttp2_session *session,
+                              const nghttp2_frame *frame,
+                              const uint8_t *name, size_t namelen,
+                              const uint8_t *value, size_t valuelen,
+                              uint8_t flags, void *user_data);
+static int on_data_chunk_recv_callback(nghttp2_session *session,
+                                       uint8_t flags,
+                                       int32_t stream_id,
+                                       const uint8_t *data, size_t len,
+                                       void *user_data);
+static int on_frame_recv_callback(nghttp2_session *session,
+                                  const nghttp2_frame *frame,
+                                  void *user_data);
+static int on_stream_close_callback(nghttp2_session *session,
+                                    int32_t stream_id,
+                                    uint32_t error_code,
+                                    void *user_data);
+static nghttp2_session *setup_h2_session(conn_t *conn);
+
+static int create_listen_socket(const char *ip, uint16_t port);
+static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls);
+
+/*
+ * High-level flow:
+ * 1. Parse mode from args:
+ *    - <PORT>            => h2c (prior knowledge)
+ *    - <PORT> <KEY> <CERT> => TLS + ALPN h2
+ * 2. Create listen socket.
+ * 3. Accept one TCP client at a time.
+ * 4. For each client, run nghttp2 read/feed + send loop until done.
+ */
+int main(int argc, char **argv) {
+  signal(SIGPIPE, SIG_IGN);
+
+  const char *ip = "127.0.0.1";
+  uint16_t port = 0;
+  const char *cert_pem = "server.crt";
+  const char *key_pem = "server.key";
+  int use_tls = 0;
+
+  if (argc >= 2 &&
+      (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
+    print_usage(stdout, argv[0]);
+    return 0;
+  }
+
+  if (!(argc == 2 || argc == 4)) {
+    print_usage(stderr, argv[0]);
+    return 2;
+  }
+
+  char *endp = NULL;
+  unsigned long p = strtoul(argv[1], &endp, 10);
+  if (argv[1][0] == '\0' || endp == NULL || *endp != '\0' || p == 0 || p > 65535) {
+    fprintf(stderr, "Invalid port: %s\n", argv[1]);
+    print_usage(stderr, argv[0]);
+    return 2;
+  }
+  port = (uint16_t)p;
+
+  if (argc == 4) {
+    key_pem = argv[2];
+    cert_pem = argv[3];
+    use_tls = 1;
+  }
+
+  SSL_CTX *ctx = NULL;
+  if (use_tls) {
+    SSL_library_init();
+    SSL_load_error_strings();
+    OpenSSL_add_ssl_algorithms();
+    ctx = create_ssl_ctx(cert_pem, key_pem);
+  }
+
+  int lfd = create_listen_socket(ip, port);
+  if (use_tls) {
+    fprintf(stderr, "Listening on https://%s:%u (HTTP/2 via ALPN h2)\n", ip, port);
+    fprintf(stderr, "Try: nghttp -v https://%s:%u/ --no-verify-peer\n", ip, port);
+    fprintf(stderr, "Try: curl -v -k --http2 https://%s:%u/\n", ip, port);
+  } else {
+    fprintf(stderr, "Listening on http://%s:%u (h2c prior-knowledge)\n", ip, port);
+    fprintf(stderr, "Try: nghttp -v http://%s:%u/\n", ip, port);
+    fprintf(stderr, "Try: curl -v --http2-prior-knowledge http://%s:%u/\n", ip, port);
+  }
+
+  for (;;) {
+    struct sockaddr_in caddr;
+    socklen_t clen = sizeof(caddr);
+    int cfd = accept(lfd, (struct sockaddr *)&caddr, &clen);
+    if (cfd < 0) {
+      if (errno == EINTR) continue;
+      die("accept");
+    }
+    serve_one_connection(ctx, cfd, use_tls); /* sequential / blocking */
+  }
+
+  close(lfd);
+  if (ctx) SSL_CTX_free(ctx);
+  EVP_cleanup();
+  return 0;
+}
+
 static void die(const char *msg) {
   perror(msg);
   exit(1);
@@ -401,7 +530,7 @@ static int create_listen_socket(const char *ip, uint16_t port) {
   return fd;
 }
 
-/* ---------- main serving loop ---------- */
+/* ---------- per-connection loop ---------- */
 
 static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls) {
   conn_t conn;
@@ -485,86 +614,4 @@ static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls) {
     SSL_free(conn.ssl);
   }
   close(client_fd);
-}
-
-/*
- * High-level flow:
- * 1. Accept one TCP client.
- * 2. In TLS mode, complete handshake and verify ALPN chose "h2".
- * 3. Create nghttp2 server session and queue initial SETTINGS.
- * 4. Repeatedly:
- *    - read bytes from transport
- *    - feed bytes into nghttp2 (frame parsing + callbacks)
- *    - ask nghttp2 to serialize pending outbound frames
- * 5. Exit when session no longer wants read/write or peer closes.
- */
-int main(int argc, char **argv) {
-  signal(SIGPIPE, SIG_IGN);
-
-  const char *ip = "127.0.0.1";
-  uint16_t port = 0;
-  const char *cert_pem = "server.crt";
-  const char *key_pem = "server.key";
-  int use_tls = 0;
-
-  if (argc >= 2 &&
-      (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0)) {
-    print_usage(stdout, argv[0]);
-    return 0;
-  }
-
-  if (!(argc == 2 || argc == 4)) {
-    print_usage(stderr, argv[0]);
-    return 2;
-  }
-
-  char *endp = NULL;
-  unsigned long p = strtoul(argv[1], &endp, 10);
-  if (argv[1][0] == '\0' || endp == NULL || *endp != '\0' || p == 0 || p > 65535) {
-    fprintf(stderr, "Invalid port: %s\n", argv[1]);
-    print_usage(stderr, argv[0]);
-    return 2;
-  }
-  port = (uint16_t)p;
-
-  if (argc == 4) {
-    key_pem = argv[2];
-    cert_pem = argv[3];
-    use_tls = 1;
-  }
-
-  SSL_CTX *ctx = NULL;
-  if (use_tls) {
-    SSL_library_init();
-    SSL_load_error_strings();
-    OpenSSL_add_ssl_algorithms();
-    ctx = create_ssl_ctx(cert_pem, key_pem);
-  }
-
-  int lfd = create_listen_socket(ip, port);
-  if (use_tls) {
-    fprintf(stderr, "Listening on https://%s:%u (HTTP/2 via ALPN h2)\n", ip, port);
-    fprintf(stderr, "Try: nghttp -v https://%s:%u/ --no-verify-peer\n", ip, port);
-    fprintf(stderr, "Try: curl -v -k --http2 https://%s:%u/\n", ip, port);
-  } else {
-    fprintf(stderr, "Listening on http://%s:%u (h2c prior-knowledge)\n", ip, port);
-    fprintf(stderr, "Try: nghttp -v http://%s:%u/\n", ip, port);
-    fprintf(stderr, "Try: curl -v --http2-prior-knowledge http://%s:%u/\n", ip, port);
-  }
-
-  for (;;) {
-    struct sockaddr_in caddr;
-    socklen_t clen = sizeof(caddr);
-    int cfd = accept(lfd, (struct sockaddr *)&caddr, &clen);
-    if (cfd < 0) {
-      if (errno == EINTR) continue;
-      die("accept");
-    }
-    serve_one_connection(ctx, cfd, use_tls); /* sequential / blocking */
-  }
-
-  close(lfd);
-  if (ctx) SSL_CTX_free(ctx);
-  EVP_cleanup();
-  return 0;
 }
