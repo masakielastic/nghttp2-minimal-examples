@@ -325,6 +325,12 @@ static int alpn_select_cb(SSL *ssl,
 /* ---------- TCP helpers ---------- */
 
 static int create_listen_socket(const char *ip, uint16_t port) {
+  /*
+   * Deliberately simplified networking scope:
+   * - IPv4-only listen socket (no IPv6 / dual-stack handling).
+   * - This helper only creates the listening endpoint; connection
+   *   concurrency strategy is intentionally kept minimal elsewhere.
+   */
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) die("socket");
 
@@ -605,6 +611,8 @@ static int on_header_callback(nghttp2_session *session,
 /*
  * Per-data-chunk callback.
  * DATA payload bytes may arrive split across multiple callbacks.
+ * This sample only observes/logs request body chunks and does not
+ * accumulate or fully process request bodies.
  */
 static int on_data_chunk_recv_callback(nghttp2_session *session,
                                        uint8_t flags,
@@ -623,6 +631,8 @@ static int on_data_chunk_recv_callback(nghttp2_session *session,
  * Per-frame callback: entry point for frame-level observation.
  * We inspect frame header flags here (for example END_STREAM) because
  * END_STREAM is a frame-flag concept, not a per-header-field concept.
+ * Request handling is intentionally a simple 1-request -> 1-response path
+ * for each stream, without routing or advanced application dispatch.
  */
 static int on_frame_recv_callback(nghttp2_session *session,
                                   const nghttp2_frame *frame,
