@@ -27,6 +27,18 @@
 #define MSG_NOSIGNAL 0
 #endif
 
+/*
+ * This helper points nghttp2_nv to existing string storage.
+ * The pointed strings must remain valid while nghttp2 uses them.
+ * Fine for this minimal example, but real code should document ownership clearly.
+ */
+#define MAKE_NV(NAME, VALUE)                                                   \
+  (nghttp2_nv){                                                                \
+      (uint8_t *)(NAME), (uint8_t *)(VALUE),                                   \
+      (uint16_t)strlen(NAME), (uint16_t)strlen(VALUE),                         \
+      NGHTTP2_NV_FLAG_NONE                                                     \
+  }
+
 #define RECV_BUF_SIZE (16 * 1024)
 #define MAX_CONCURRENT_STREAMS 100
 static const uint8_t RESPONSE_PAYLOAD[] = "Hello HTTP/2 over TLS\n";
@@ -379,12 +391,19 @@ static int submit_simple_response(nghttp2_session *session, int32_t stream_id) {
     return NGHTTP2_ERR_CALLBACK_FAILURE;
   }
 
+  /*
+   * HTTP/2 uses pseudo-headers for control data.
+   * For responses, ":status" replaces the HTTP/1.1 status line:
+   *
+   *   HTTP/1.1 200 OK
+   *
+   * becomes:
+   *   :status = 200
+   */
   nghttp2_nv hdrs[] = {
-      {(uint8_t *)":status", (uint8_t *)"200", 7, 3, NGHTTP2_NV_FLAG_NONE},
-      {(uint8_t *)"content-type", (uint8_t *)"text/plain; charset=utf-8",
-       12, 24, NGHTTP2_NV_FLAG_NONE},
-      {(uint8_t *)"content-length", (uint8_t *)content_length,
-       14, (uint16_t)strlen(content_length), NGHTTP2_NV_FLAG_NONE},
+      MAKE_NV(":status", "200"),
+      MAKE_NV("content-type", "text/plain; charset=utf-8"),
+      MAKE_NV("content-length", content_length),
   };
 
   nghttp2_data_provider dp;
@@ -412,6 +431,19 @@ static int on_header_callback(nghttp2_session *session,
   (void)flags;
   (void)user_data;
 
+  /*
+   * HTTP/2 uses pseudo-headers for request control data.
+   * These replace the request line in HTTP/1.1:
+   *
+   *   GET /path HTTP/1.1
+   *   Host: example.com
+   *
+   * becomes:
+   *   :method = GET
+   *   :scheme = https
+   *   :authority = example.com:443
+   *   :path = /path
+   */
   if (frame->hd.type == NGHTTP2_HEADERS &&
       frame->headers.cat == NGHTTP2_HCAT_REQUEST) {
     fprintf(stderr, "Req-H (stream=%d): %.*s: %.*s\n",
