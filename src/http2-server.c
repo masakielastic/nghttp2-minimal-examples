@@ -364,6 +364,117 @@ static int submit_simple_response(nghttp2_session *session, int32_t stream_id) {
   return 0;
 }
 
+/* ---------- TCP helpers ---------- */
+
+static int create_listen_socket(const char *ip, uint16_t port) {
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) die("socket");
+
+  int yes = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
+    die("setsockopt");
+  }
+
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
+    fprintf(stderr, "inet_pton failed for %s\n", ip);
+    exit(1);
+  }
+
+  if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) die("bind");
+  if (listen(fd, 16) < 0) die("listen");
+  return fd;
+}
+
+/* ---------- per-connection loop ---------- */
+
+static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls) {
+  conn_t conn;
+  memset(&conn, 0, sizeof(conn));
+  conn.fd = client_fd;
+  conn.use_tls = use_tls;
+
+  if (use_tls) {
+    conn.ssl = SSL_new(ctx);
+    if (!conn.ssl) {
+      close(client_fd);
+      return;
+    }
+    if (SSL_set_fd(conn.ssl, client_fd) != 1) {
+      fprintf(stderr, "SSL_set_fd failed\n");
+      SSL_free(conn.ssl);
+      close(client_fd);
+      return;
+    }
+
+    int r = SSL_accept(conn.ssl);
+    if (r != 1) {
+      int err = SSL_get_error(conn.ssl, r);
+      fprintf(stderr, "SSL_accept failed (err=%d)\n", err);
+      ERR_print_errors_fp(stderr);
+      SSL_free(conn.ssl);
+      close(client_fd);
+      return;
+    }
+
+    const unsigned char *alpn = NULL;
+    unsigned int alpn_len = 0;
+    SSL_get0_alpn_selected(conn.ssl, &alpn, &alpn_len);
+    if (!(alpn_len == 2 && memcmp(alpn, "h2", 2) == 0)) {
+      fprintf(stderr, "Client did not negotiate h2 via ALPN (got: %.*s). Closing.\n",
+              (int)alpn_len, alpn ? (const char *)alpn : "");
+      SSL_shutdown(conn.ssl);
+      SSL_free(conn.ssl);
+      close(client_fd);
+      return;
+    }
+  }
+
+  nghttp2_session *session = setup_h2_session(&conn);
+  if (!session) {
+    if (conn.ssl) {
+      SSL_shutdown(conn.ssl);
+      SSL_free(conn.ssl);
+    }
+    close(client_fd);
+    return;
+  }
+
+  if (flush_outbound(session) != 0) {
+    nghttp2_session_del(session);
+    if (conn.ssl) {
+      SSL_shutdown(conn.ssl);
+      SSL_free(conn.ssl);
+    }
+    close(client_fd);
+    return;
+  }
+
+  uint8_t buf[RECV_BUF_SIZE];
+
+  for (;;) {
+    int rr = read_and_feed(session, &conn, buf, sizeof(buf));
+    if (rr > 0) break;
+    if (rr < 0) break;
+    if (flush_outbound(session) != 0) break;
+
+    if (nghttp2_session_want_read(session) == 0 &&
+        nghttp2_session_want_write(session) == 0) {
+      break;
+    }
+  }
+
+  nghttp2_session_del(session);
+  if (conn.ssl) {
+    SSL_shutdown(conn.ssl);
+    SSL_free(conn.ssl);
+  }
+  close(client_fd);
+}
+
 static nghttp2_session *setup_h2_session(conn_t *conn) {
   nghttp2_session_callbacks *cbs = NULL;
   nghttp2_session *session = NULL;
@@ -535,115 +646,4 @@ static int on_stream_close_callback(nghttp2_session *session,
     nghttp2_session_set_stream_user_data(session, stream_id, NULL);
   }
   return 0;
-}
-
-/* ---------- TCP helpers ---------- */
-
-static int create_listen_socket(const char *ip, uint16_t port) {
-  int fd = socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) die("socket");
-
-  int yes = 1;
-  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
-    die("setsockopt");
-  }
-
-  struct sockaddr_in addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
-    fprintf(stderr, "inet_pton failed for %s\n", ip);
-    exit(1);
-  }
-
-  if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) die("bind");
-  if (listen(fd, 16) < 0) die("listen");
-  return fd;
-}
-
-/* ---------- per-connection loop ---------- */
-
-static void serve_one_connection(SSL_CTX *ctx, int client_fd, int use_tls) {
-  conn_t conn;
-  memset(&conn, 0, sizeof(conn));
-  conn.fd = client_fd;
-  conn.use_tls = use_tls;
-
-  if (use_tls) {
-    conn.ssl = SSL_new(ctx);
-    if (!conn.ssl) {
-      close(client_fd);
-      return;
-    }
-    if (SSL_set_fd(conn.ssl, client_fd) != 1) {
-      fprintf(stderr, "SSL_set_fd failed\n");
-      SSL_free(conn.ssl);
-      close(client_fd);
-      return;
-    }
-
-    int r = SSL_accept(conn.ssl);
-    if (r != 1) {
-      int err = SSL_get_error(conn.ssl, r);
-      fprintf(stderr, "SSL_accept failed (err=%d)\n", err);
-      ERR_print_errors_fp(stderr);
-      SSL_free(conn.ssl);
-      close(client_fd);
-      return;
-    }
-
-    const unsigned char *alpn = NULL;
-    unsigned int alpn_len = 0;
-    SSL_get0_alpn_selected(conn.ssl, &alpn, &alpn_len);
-    if (!(alpn_len == 2 && memcmp(alpn, "h2", 2) == 0)) {
-      fprintf(stderr, "Client did not negotiate h2 via ALPN (got: %.*s). Closing.\n",
-              (int)alpn_len, alpn ? (const char *)alpn : "");
-      SSL_shutdown(conn.ssl);
-      SSL_free(conn.ssl);
-      close(client_fd);
-      return;
-    }
-  }
-
-  nghttp2_session *session = setup_h2_session(&conn);
-  if (!session) {
-    if (conn.ssl) {
-      SSL_shutdown(conn.ssl);
-      SSL_free(conn.ssl);
-    }
-    close(client_fd);
-    return;
-  }
-
-  if (flush_outbound(session) != 0) {
-    nghttp2_session_del(session);
-    if (conn.ssl) {
-      SSL_shutdown(conn.ssl);
-      SSL_free(conn.ssl);
-    }
-    close(client_fd);
-    return;
-  }
-
-  uint8_t buf[RECV_BUF_SIZE];
-
-  for (;;) {
-    int rr = read_and_feed(session, &conn, buf, sizeof(buf));
-    if (rr > 0) break;
-    if (rr < 0) break;
-    if (flush_outbound(session) != 0) break;
-
-    if (nghttp2_session_want_read(session) == 0 &&
-        nghttp2_session_want_write(session) == 0) {
-      break;
-    }
-  }
-
-  nghttp2_session_del(session);
-  if (conn.ssl) {
-    SSL_shutdown(conn.ssl);
-    SSL_free(conn.ssl);
-  }
-  close(client_fd);
 }
