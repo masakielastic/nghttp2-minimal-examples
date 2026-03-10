@@ -683,6 +683,15 @@ static int on_frame_recv_callback(nghttp2_session *session,
     fprintf(stderr, "[event] END_STREAM stream=%d frame_type=%u\n",
             frame->hd.stream_id, frame->hd.type);
 
+    /*
+     * Request completion cases:
+     *
+     * 1) HEADERS carries END_STREAM
+     *      -> typical GET request (no body)
+     *
+     * 2) DATA carries END_STREAM
+     *      -> request body finished (POST/PUT)
+     */
     if ((frame->hd.type == NGHTTP2_HEADERS &&
          frame->headers.cat == NGHTTP2_HCAT_REQUEST) ||
         frame->hd.type == NGHTTP2_DATA) {
