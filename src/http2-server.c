@@ -202,9 +202,9 @@ int main(int argc, char **argv) {
 
   SSL_CTX *ctx = NULL;
   if (use_tls) {
-    SSL_library_init();
-    SSL_load_error_strings();
-    OpenSSL_add_ssl_algorithms();
+    if (OPENSSL_init_ssl(0, NULL) != 1) {
+      openssl_die("OPENSSL_init_ssl failed");
+    }
     ctx = create_ssl_ctx(cert_pem, key_pem);
   }
 

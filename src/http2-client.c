@@ -125,8 +125,10 @@ int main(int argc, char **argv) {
   const char *path = argv[3];
 
   /* OpenSSL init */
-  SSL_library_init();
-  SSL_load_error_strings();
+  if (OPENSSL_init_ssl(0, NULL) != 1) {
+    fprintf(stderr, "OPENSSL_init_ssl failed\n");
+    return 1;
+  }
 
   int exit_code = 1;
   int fd = -1;
